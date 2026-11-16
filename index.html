@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Eloquio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#eef1f8;--ink:#12183a;--mu:#5b6288;--ac:#3b4cca;--ln:#d3d8ea;--hi:#ffb703}
+@media(prefers-color-scheme:dark){:root{--bg:#10142b;--ink:#eef0fb;--mu:#9aa2cf;--ac:#8d9bff;--ln:#262c52}}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:17px/1.5 Georgia,"Times New Roman",serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:520px;margin:0 auto;padding:28px 20px 48px}
+h1{font-size:34px;letter-spacing:-.02em;margin:0}
+.sub{color:var(--mu);margin:2px 0 26px}
+section{border-top:1px solid var(--ln);padding:16px 0}
+h2{font-size:18px;margin:0 0 6px}
+.mu{color:var(--mu);font-size:15px;font-family:system-ui,sans-serif}
+button,select{font:600 16px system-ui,sans-serif;min-height:48px;border-radius:12px;border:1px solid var(--ln);background:transparent;color:var(--ink);padding:0 16px;cursor:pointer}
+button.go{background:var(--ac);color:#fff;border-color:var(--ac);width:100%;font-size:18px}
+button:focus-visible,select:focus-visible{outline:3px solid var(--hi);outline-offset:2px}
+.row{display:flex;gap:10px;margin-top:12px}.row>*{flex:1}
+.orb{width:132px;height:132px;border-radius:50%;margin:8px auto 18px;border:3px solid var(--ac);box-shadow:0 0 0 0 var(--ac);transition:.25s}
+.orb.l{animation:r 1.6s infinite;background:color-mix(in srgb,var(--ac) 18%,transparent)}
+.orb.a{background:var(--ac)}
+@keyframes r{70%{box-shadow:0 0 0 22px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@media(prefers-reduced-motion:reduce){.orb.l{animation:none}}
+.coach{font-size:22px;min-height:66px}.you{color:var(--mu);font-style:italic;min-height:52px}
+.c{text-align:center}.hide{display:none}pre{white-space:pre-wrap;font:inherit;margin:0}
+</style></head><body><main>
+<h1>Eloquio</h1><p class="sub">Say it out loud. Get better at saying it.</p>
+
+<div id="home">
+ <section><h2>Start a session</h2>
+  <p class="mu">3 to 5 minutes. Warm-up first, then talk. Headphones help.</p>
+  <div class="row"><select id="voice" aria-label="Coach voice"></select>
+   <select id="pat" aria-label="Pause before a nudge"><option value="4000">Nudge after 4s</option><option value="6000" selected>Nudge after 6s</option><option value="9000">Nudge after 9s</option></select></div>
+  <div class="row"><button class="go" id="go">Start</button></div><p class="mu" id="err"></p></section>
+ <section><h2>Last session</h2><p class="mu" id="last">None yet.</p></section>
+ <section><h2>Word bank</h2><p class="mu" id="wb">Words you ask for will show here.</p></section>
+ <section><h2>Saved on this device</h2><p class="mu" id="mem"></p><button id="clr">Delete my data</button></section>
+</div>
+
+<div id="live" class="hide">
+ <div class="orb" id="orb"></div><p class="c mu" id="st">Starting…</p>
+ <section><h2>Coach</h2><div class="coach" id="ai"></div></section>
+ <section><h2>You</h2><div class="you" id="me">…</div></section>
+ <p class="c mu">Stuck on a word? Say “what’s the word for…”</p>
+ <div class="row"><button id="mic">Mic on/off</button><button id="end" class="go">Finish</button></div>
+</div>
+
+<div id="sum" class="hide">
+ <section><h2>Session summary</h2><pre id="sumt"></pre></section>
+ <section><h2>Say it better</h2><p class="mu" id="sib"></p></section>
+ <div class="row"><button class="go" id="back">Done</button></div>
+</div>
+</main>
+<script>
+// ===== Settings =====
+// Leave empty for free rule-based mode. Later, put the URL of your own small backend that holds your AI key.
+const AI_ENDPOINT = "";
+// Scripted lines. To use your own voice, save recordings as voices/<key>.mp3 (see README). Missing files fall back to the device voice.
+const LINES={warmup:"Warm-up. Tell me what you did today.",more:"Tell me more about that.",next:"What happened next?",who:"Who else was involved?",best:"What was the best part?",why:"Why do you think that happened?",choice1:"Was it more about the people or the situation?",choice2:"Did that feel easy or hard?",easy1:"Tell me about your favorite food.",easy2:"Describe the room you’re in.",easy3:"Tell me one thing you did this week."};
+const LADDER=[["more","next","who","best"],["choice1","choice2"],["easy1","easy2","easy3"]];
+const ACK=["why","next","who","best","more"];
+
+const $=i=>document.getElementById(i),K="eloquio_v1";
+let S={sessions:[],words:[]};try{S=JSON.parse(localStorage.getItem(K))||S}catch(e){}
+const save=()=>{try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}};
+const view=v=>["home","live","sum"].forEach(x=>$(x).classList.toggle("hide",x!==v));
+const FILL=/\b(um+|uh+|er+|hmm+|you know|i mean|basically)\b/gi;
+let run=false,micOn=false,speaking=false,busy=false,pend="",lastAct=0,nudges=0,st,hist=[],t0=0,grace=0,lastF="",lastSent="",R=null,turns=0;
+
+function home(){
+ const l=S.sessions.at(-1);
+ $("last").textContent=l?`${new Date(l.t).toLocaleDateString()}: ${l.min} min, ${l.w} words, ${l.f} fillers, ${l.b} blank moments.`:"None yet.";
+ $("wb").textContent=S.words.length?S.words.slice(-20).join(", "):"Words you ask for will show here.";
+ $("mem").textContent=S.sessions.length?`${S.sessions.length} sessions of speaking stats and your word bank. No audio is stored.`:"Nothing saved yet. No audio is stored.";
+}
+$("clr").onclick=()=>{S={sessions:[],words:[]};save();home()};
+
+// ===== Voice output =====
+function loadVoices(){const v=speechSynthesis.getVoices();$("voice").innerHTML=v.map(x=>`<option>${x.name}</option>`).join("")||"<option>Default voice</option>";const p=localStorage.getItem("eloquio_voice");if(p)$("voice").value=p}
+if(window.speechSynthesis){loadVoices();speechSynthesis.onvoiceschanged=loadVoices}
+$("voice").onchange=()=>{try{localStorage.setItem("eloquio_voice",$("voice").value)}catch(e){}};
+function speak(txt,key){return new Promise(res=>{
+ let done=false;const fin=()=>{if(done)return;done=true;speaking=false;grace=Date.now()+800;lastAct=Date.now();res()};
+ speaking=true;
+ const tts=()=>{if(done)return;if(!window.speechSynthesis)return fin();const u=new SpeechSynthesisUtterance(txt);const v=speechSynthesis.getVoices().find(x=>x.name===$("voice").value);if(v)u.voice=v;u.onend=u.onerror=fin;speechSynthesis.speak(u)};
+ if(key){const a=new Audio("voices/"+key+".mp3");a.onended=fin;a.onerror=tts;a.play().catch(tts)}else tts()})}
+function setSt(t,c){$("st").textContent=t;$("orb").className="orb "+(c||"")}
+function coach(txt,key){$("ai").textContent=txt;hist.push("Coach: "+txt);setSt("Coach speaking…","a");speak(txt,key).then(()=>run&&setSt(micOn?"Your turn":"Mic is off","l"))}
+
+// ===== Mic input =====
+function startMic(){
+ const C=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!C){$("err").textContent="This browser has no speech recognition. Use Chrome or Edge.";return false}
+ R=new C();R.continuous=true;R.interimResults=true;R.lang="en-IN";
+ R.onstart=()=>{micOn=true;if(!speaking&&!busy)setSt("Listening…","l")};
+ R.onerror=e=>setSt("Mic problem: "+e.error+". Allow microphone access for this site.","");
+ R.onend=()=>{micOn=false;if(run&&R&&R.keep){try{R.start()}catch(x){}}};
+ R.onresult=e=>{let p="";for(let i=e.resultIndex;i<e.results.length;i++){const r=e.results[i],t=r[0].transcript.trim();
+   if(speaking||Date.now()<grace)continue;
+   if(r.isFinal){if(t&&t!==lastF){lastF=t;pend=(pend+" "+t).trim();nudges=0;lastAct=Date.now()}}else p+=t}
+   if(p){lastAct=Date.now()}$("me").textContent=(pend+" "+p).trim()||"…"};
+ R.keep=true;try{R.start()}catch(x){$("err").textContent="Couldn’t start the mic: "+x.message;return false}return true}
+$("mic").onclick=()=>{if(!R)return;if(micOn){R.keep=false;R.stop()}else{R.keep=true;try{R.start()}catch(e){}}};
+
+// ===== AI (optional) =====
+async function ask(task,data){
+ if(!AI_ENDPOINT)return null;
+ try{const r=await fetch(AI_ENDPOINT,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task,...data})});return (await r.json()).text||null}catch(e){return null}}
+
+// ===== Conversation =====
+function nudge(){st.b++;const l=LADDER[Math.min(nudges,2)],k=l[st.b%l.length];nudges++;coach(LINES[k],k)}
+const WORDQ=/(what'?s|what is)\s+the\s+word|word\s+(for|that|we say)|forgot\s+the\s+word|tip of my tongue/i;
+async function turn(){
+ const t=pend;pend="";if(!t)return;busy=true;setSt("Thinking…","");turns++;
+ st.w+=t.split(/\s+/).length;st.f+=(t.match(FILL)||[]).length;lastSent=t;hist.push("User: "+t);
+ if(WORDQ.test(t)){
+  st.asked++;const r=await ask("word",{text:t});
+  if(r){const w=r.split(/[-–—\n]/)[0].trim();if(w&&!S.words.includes(w)){S.words.push(w);save()}coach(r.split("\n")[0]+". Now use it in your own sentence.")}
+  else coach("Word help needs the AI connection. For now, describe the word another way and keep going.")
+ }else{
+  const r=await ask("chat",{history:hist.slice(-8)});
+  if(r)coach(r);else{const k=ACK[turns%ACK.length];coach(LINES[k],k)}
+ }
+ busy=false;lastAct=Date.now()}
+setInterval(()=>{
+ if(!run||busy||speaking)return;const idle=Date.now()-lastAct;
+ if(pend&&idle>1700)turn();else if(!pend&&micOn&&idle>+$("pat").value)nudge()},400);
+
+$("go").onclick=()=>{
+ $("err").textContent="";
+ if(!startMic())return;
+ st={w:0,f:0,b:0,asked:0};hist=[];pend="";nudges=0;turns=0;t0=Date.now();run=true;lastAct=Date.now();
+ try{navigator.wakeLock&&navigator.wakeLock.request("screen")}catch(e){}
+ view("live");coach(LINES.warmup,"warmup")};
+$("end").onclick=async()=>{
+ run=false;if(R){R.keep=false;try{R.stop()}catch(e){}}speechSynthesis&&speechSynthesis.cancel();
+ if(pend){st.w+=pend.split(/\s+/).length;st.f+=(pend.match(FILL)||[]).length}
+ const min=Math.max(1,Math.round((Date.now()-t0)/60000)),p=S.sessions.at(-1),per=(f,w)=>(f/Math.max(1,w)*100).toFixed(1);
+ S.sessions.push({t:Date.now(),min,w:st.w,f:st.f,b:st.b});S.sessions=S.sessions.slice(-30);save();
+ let tips=[];if(st.f/Math.max(1,st.w)>.05)tips.push("Fillers are frequent. Replace “um” with a silent pause.");
+ if(st.b>2)tips.push("You went blank a few times. Say “let me think” to buy time, then answer in one sentence.");
+ if(!tips.length)tips.push("Solid session. Next time, add one concrete example to each answer.");
+ $("sumt").textContent=`${min} min, ${st.w} words, ~${Math.round(st.w/min)} words/min.\nFillers: ${st.f} (${per(st.f,st.w)} per 100 words)${p?`, last time ${per(p.f,p.w)}`:""}.\nBlank moments: ${st.b}. Word help: ${st.asked}.\n\n${tips.join("\n")}`;
+ $("sib").textContent="";view("sum");
+ const mine=hist.filter(h=>h.startsWith("User: ")).map(h=>h.slice(6)).sort((a,b)=>b.length-a.length)[0];
+ if(mine){const r=await ask("rewrite",{text:mine});$("sib").textContent=r?`You said: “${mine}” Try: “${r}” Say it aloud once.`:"Connect the AI to get a cleaner rewrite of your longest sentence."}};
+$("back").onclick=()=>{home();view("home")};
+home();
+</script></body></html>
